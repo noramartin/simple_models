@@ -5,17 +5,18 @@ import numpy as np
 from numba import jit
 import networkx.algorithms.isomorphism as iso
 from functions.polyomino_builder_own import build_polyomino
+from itertools import permutations, product
 
 em = iso.categorical_multiedge_match('edgetype', default='')
 
-#@jit(nopython=True)
+def assembly_graphs_isomorhpic(a1, a2):
+	return nx.is_isomorphic(a1, a2, edge_match = em)
+
 def adjacancy_matrix_assembly_graph(g, seeded_assembly):
 	assert len(g) % 4 == 0
 	#### make graph and record key characteristics for quick polymorphism check
 	assembly_graph = nx.MultiDiGraph()
-	#assembly_graph_adjacancy = np.zeros((len(g), len(g)), dtype='uint8')
 	num_tiles = len(g)//4
-	number_edges, tile_vs_info = 0, {i: [0,] * 5 for i in range(num_tiles)}
     # edges to show interface ordering
 	for tile in range(num_tiles):
 	 	for i in range(3):
@@ -23,6 +24,8 @@ def adjacancy_matrix_assembly_graph(g, seeded_assembly):
 	 		if tile == 0 and seeded_assembly:
 	 			assembly_graph.add_edge(i + tile *4, i+1 + tile * 4, edgetype = 'firsttile')
 	 	assembly_graph.add_edge(3 + tile *4, tile * 4, edgetype = 'internal')
+	 	if tile == 0 and seeded_assembly:
+	 		assembly_graph.add_edge(3 + tile *4, tile * 4, edgetype = 'firsttile')
 	for i, interface in enumerate(g):
 		## find binding partners 
 		if interface > 0:
@@ -31,14 +34,7 @@ def adjacancy_matrix_assembly_graph(g, seeded_assembly):
 				if interface2 == binding_partner:
 					assembly_graph.add_edge(i, j, edgetype = 'interaction')
 					assembly_graph.add_edge(j, i, edgetype = 'interaction')
-					number_edges += 1
-					if i//4 == j//4:
-						tile_vs_info[i//4][-1] += 1
-					else:
-					   tile_vs_info[i//4][i%4] += 1
-					   tile_vs_info[j//4][j%4] += 1
-	tile_vs_info_sorted = {tile: tuple(sorted(info[:4]) + [info[4],]) for tile, info in tile_vs_info.items()}
-	return assembly_graph, number_edges, deepcopy(tuple(sorted(list(tile_vs_info.values()))))
+	return assembly_graph
 
 
 @jit(nopython=True)
@@ -57,13 +53,28 @@ def cyclic_permutations(g_array):
 			new_genotype_list.append(rotate_tile(tile_to_rotate, rotation, g_array))
 	return new_genotype_list
 
-def construct_simplest_genotype(g, max_c):
+def construct_simplest_genotype(g, max_c, seeded=True):
 	num_tiles = len(g)//4
-	if num_tiles == 2:
-		minimal_genotypes = [replace_by_nonbounding(g2, max_c) for g2 in cyclic_permutations(np.array(g, dtype='uint8'))]
+	list_genos = []
+	tiles = {i: tuple([g[4*i + j] for j in range(4)]) for i in range(num_tiles)}
+	if seeded:
+		swaps_to_make_from = 1
 	else:
-		minimal_genotypes = [replace_by_nonbounding(g3, max_c) for g2 in cyclic_permutations(np.array(g, dtype='uint8')) for g3 in cyclic_permutations(np.array(g2, dtype='uint8'))] # so that you also twist against each other
-	return min([tuple(g[:]) for g in minimal_genotypes])
+		swaps_to_make_from = 0
+	for order_tiles in permutations([i for i in range(swaps_to_make_from, num_tiles)], r=num_tiles-swaps_to_make_from):
+		if seeded:
+			geno_new = [i for i in tiles[0]] + [i for j in order_tiles for i in tiles[j]]
+		else:
+			geno_new = [i for j in order_tiles for i in tiles[j]]
+		assert len(geno_new) == len(g)
+		for rotation_info in product(np.arange(4), repeat=num_tiles):
+			geno_new_rotated = [x for x in geno_new]
+			for tile_to_rotate, rotation in enumerate(rotation_info):
+				geno_new_rotated = rotate_tile(tile_to_rotate, rotation, np.array(geno_new_rotated))
+			list_genos.append(tuple([int(x) for x in geno_new_rotated]))
+	ming = min([replace_by_nonbounding(np.array(g[:]), max_c) for g in list_genos])
+	return list_genos, tuple([int(x) for x in ming])
+
  
 
 @jit(nopython=True)
@@ -98,17 +109,15 @@ def replace_by_nonbounding(g_array, max_c):
 
 
 
-def find_assembly_graph(g, assembly_graph_list, graph_vs_characteristics, seeded_assembly = False):
+def find_assembly_graph(g, assembly_graph_list, seeded_assembly = False):
 	#### make graph and record key characteristics for quick polymorphism check
-	assembly_graph, number_edges, tile_vs_info = adjacancy_matrix_assembly_graph(np.array(g), seeded_assembly=seeded_assembly)
+	assembly_graph = adjacancy_matrix_assembly_graph(np.array(g), seeded_assembly=seeded_assembly)
 	#### polymorphism check: return index to list or append to list
 	for i, assembly_graph_existing in enumerate(assembly_graph_list):
-		if len(graph_vs_characteristics) == 0 or (graph_vs_characteristics[i][0] == number_edges and graph_vs_characteristics[i][1] == tile_vs_info):
-			if nx.is_isomorphic(assembly_graph_existing, assembly_graph, edge_match = em):
-				return i + 1, assembly_graph_list, graph_vs_characteristics
+		if nx.is_isomorphic(assembly_graph_existing, assembly_graph, edge_match = em):
+			return i + 1, assembly_graph_list
 	assembly_graph_list.append(deepcopy(assembly_graph))
-	graph_vs_characteristics[len(assembly_graph_list) - 1] = (number_edges, tile_vs_info)
-	return len(assembly_graph_list), assembly_graph_list, graph_vs_characteristics
+	return len(assembly_graph_list), assembly_graph_list
 
 
 @jit(nopython=True)
@@ -129,14 +138,14 @@ def find_full_ensemble_polyomino(genotype, n_runs, seeded=False, threshold=5):
 		  		index_vs_count[0] += 1
 			except KeyError:
 				index_vs_count[0] = 1
-			continue	
-		assert len(pos_list_tiles) > 0		
-		### unique representation
-		phenotype = min([from_tuple_list_to_str(rotate_coords(pos_list_tiles, angle)) for angle in [0, 90, 180, 270] ])#for reflection in [True, False]
-		try:
-		   index_vs_count[phenotype] += 1
-		except KeyError:
-		   index_vs_count[phenotype] = 1
+		else:	
+			assert len(pos_list_tiles) > 0		
+			### unique representation
+			phenotype = min([from_tuple_list_to_str(rotate_coords(pos_list_tiles, angle)) for angle in [0, 90, 180, 270] ])#for reflection in [True, False]
+			try:
+		   		index_vs_count[phenotype] += 1
+			except KeyError:
+		   		index_vs_count[phenotype] = 1
 	discarded_count = sum([count for count in index_vs_count.values() if count < threshold])/n_runs
 	assert sum([count for count in index_vs_count.values()]) == n_runs
 	ensemble = {i: c/n_runs for i, c in index_vs_count.items() if c >= threshold}
@@ -244,5 +253,23 @@ if __name__ == "__main__":
 	tuple_list = sorted([(1, 0), (2, 1), (4, 3), (1, 1), (2, 2), (3, 2), (0, 1)])
 	print(tuple(from_str_to_tuple_list(from_tuple_list_to_str(np.array(tuple_list)))))
 	assert tuple(tuple_list) == tuple(from_str_to_tuple_list(from_tuple_list_to_str(np.array(tuple_list))))
-	
+	#test conversion to array and back
+	tuple_list = sorted([(0, 0), (1, 0), (2, 0), (3, 0), (3, 1)])
+	print(tuple(from_str_to_tuple_list(from_tuple_list_to_str(np.array(tuple_list)))))
+	assert tuple(tuple_list) == tuple(from_str_to_tuple_list(from_tuple_list_to_str(np.array(tuple_list))))
+	#####
+	assert tuple(rotate_tile(1, 2, np.arange(8))) == (0, 1, 2, 3, 6, 7, 4, 5)
+	assert tuple(replace_by_nonbounding(np.array([1, 0, 5, 3, 4, 0, 1, 1]), 5)) == (0, 0, 0, 1, 2, 0, 0, 0) == tuple(replace_by_nonbounding(np.array([1, 0, 5, 4, 3, 0, 1, 1]), 5))
+	#######
+	for seeded in [True, False]:
+		np.random.seed(1)
+		for i in range(10**4):
+			g = tuple([int(x) for x in np.random.choice(8, size=8, replace=True)])
+			list_geno, gmin = construct_simplest_genotype(g, max_c=7, seeded=seeded)
+			a1 = adjacancy_matrix_assembly_graph(g, seeded_assembly=seeded)
+			for g3 in list_geno + [gmin,]:
+				for g2 in [g3, tuple([x for x in replace_by_nonbounding(np.array(g3), max_c=7)])]:
+					a2 = adjacancy_matrix_assembly_graph(g2, seeded_assembly=seeded)
+					assert nx.is_isomorphic(a1, a2, edge_match = em)
+
 

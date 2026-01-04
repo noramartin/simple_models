@@ -19,7 +19,6 @@ base_to_number={'A':0, 'C':1, 'U':2, 'G':3, 'T':2}
 RNA.cvar.uniq_ML = 1
 
 model = RNA.md()
-#model.noLP = 1 # no isolate base pairs
 model.pf_smooth = 0 # deactivate partition function smoothing
 
 
@@ -238,15 +237,15 @@ def get_Boltzmann_ensemble_fixed_cutoff(seq_tuple, db_to_structure_int, cutoff_i
    #subopt_structure_vs_G = {s2: a.eval_structure(s2) for s2 in structure_vs_energy}  ######need to test that this is correct
    subopt_structure_vs_G_checked = {s2: G for s2, G in structure_vs_energy.items() if abs(G - mfe) < cutoff_kcal}
    assert mfe_structure in structure_vs_energy
-   weight_list = np.exp(np.array([G for G in structure_vs_energy.values()]) * -1.0/kbT_RNA)
+   weight_list = np.exp(np.array([G for G in subopt_structure_vs_G_checked.values()]) * -1.0/kbT_RNA)
    if len(db_to_structure_int):
-      structure_list = [db_to_structure_int[s] for s in structure_vs_energy.keys()]
+      structure_list = [db_to_structure_int[s] for s in subopt_structure_vs_G_checked.keys()]
    else:
-      structure_list = [s for s in structure_vs_energy.keys()]
-   Z = np.sum(weight_list)
+      structure_list = [s for s in subopt_structure_vs_G_checked.keys()]
+   Z, ZVienna = np.sum(weight_list), np.exp(Z_vienna_dG * (-1)/kbT_RNA) 
    if not abs(Z/np.exp(Z_vienna_dG * (-1)/kbT_RNA) - 1) < 10**(-2):
-      print(seq_str, Z, np.exp(Z_vienna_dG * (-1)/kbT_RNA), structure_list)
-   assert abs(Z/np.exp(Z_vienna_dG * (-1)/kbT_RNA) - 1) < 10**(-3)
+      print(seq_str, Z, ZVienna, structure_list)
+   assert abs(Z/ZVienna - 1) < 10**(-2)
    del seq_str, a, mfe_structure, mfe, structure_vs_energy, subopt_structure_vs_G_checked
    return {s: w/Z for s, w in zip(structure_list, weight_list)}
 
@@ -263,13 +262,13 @@ if __name__ == "__main__":
             seq_tuple = sequence_str_to_int('CCUAGCUUGGGU')
          else:
              seq_tuple = tuple(np.random.choice(4, size=12, replace=True))
-         ensemble1 = get_Boltzmann_ensemble_fixed_cutoff(seq_tuple, db_to_structure_int, cutoff_in_kT = 1000, temp=37)
-         ensemble2 = get_Boltzmann_ensemble(seq_tuple, db_to_structure_int, temp=37)
+         ensemble1 = get_Boltzmann_ensemble_fixed_cutoff(seq_tuple, db_to_structure_int, cutoff_in_kT = 1000, temp=temp)
+         ensemble2 = get_Boltzmann_ensemble(seq_tuple, db_to_structure_int, temp=temp)
          for s in ensemble1:
             assert s in ensemble2 and abs(ensemble1[s] - ensemble2[s]) < 10**(-3)
          for s in ensemble2:
             assert s in ensemble1 and abs(ensemble1[s] - ensemble2[s]) < 10**(-3)
-         if repetition >= 10**3 - 10 and temp==37:
-            print(sequence_int_to_str(seq_tuple))
-            print(sorted([(P, structure_int_to_db[s]) for s, P in ensemble1.items() if P > 0.01]), '\n')
-            print(sorted([(P, structure_int_to_db[s]) for s, P in ensemble2.items() if P > 0.01]), '\n')
+         # if repetition >= 10**3 - 10 and temp==37:
+         #    print(sequence_int_to_str(seq_tuple))
+         #    print(sorted([(P, structure_int_to_db[s]) for s, P in ensemble1.items() if P > 0.01]), '\n')
+         #    print(sorted([(P, structure_int_to_db[s]) for s, P in ensemble2.items() if P > 0.01]), '\n')

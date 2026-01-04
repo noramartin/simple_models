@@ -20,9 +20,7 @@ def return_binding_interfaces(tiles, binding_interface_type):
 def build_polyomino(genotype, seeded, threshold, plot=False):
 	assert len(genotype) % 4 == 0
 	tiles = [tuple(genotype[4*i: 4*i + 4]) for i in range(len(genotype)//4)]
-	#print('tiles', tiles)
 	tile_vs_binding_interfaces = {t: [i for i, c in enumerate(tile) if len([c2 for i2, c2 in enumerate(genotype) if interfaces_bind(c2, c)]) > 0] for t, tile in enumerate(tiles)}
-	#print('tile_vs_binding_interfaces', tile_vs_binding_interfaces)
 	if seeded:
 		assembly = [(0, 0, 0, 0)]
 	else:
@@ -38,9 +36,6 @@ def build_polyomino(genotype, seeded, threshold, plot=False):
 		chosen_binding = deepcopy(new_bindings[np.random.choice(len(new_bindings))])
 		new_pos, new_tile, new_tile_orientation = (chosen_binding[0], chosen_binding[1]), chosen_binding[2], chosen_binding[3]
 		###
-		#positions = list(set([tuple(n[:2]) for n in new_bindings]))
-		#number = [len([n for n in new_bindings if tuple(n[:2]) == pos]) for pos in positions]
-		#print('possible positions and number options', positions, number)
 		#
 		assembly.append((new_pos[0], new_pos[1], new_tile, new_tile_orientation))
 		free_interfaces += [tile_to_free_interface_info(new_pos, new_tile_orientation, i, tiles[new_tile][i]) for i in tile_vs_binding_interfaces[new_tile]]

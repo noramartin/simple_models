@@ -22,22 +22,32 @@ def isundefined_struct_int(struct_int):
 
 
 def get_energy(struct_vect, seq_tuple, K):
-   assert len(struct_vect) == len(seq_tuple) * (K-1) and max(seq_tuple) < K
    if K == 2:
-      return -1 * np.dot(struct_vect, seq_tuple)
+      seq_tuple2 = tuple([-1 if s == 0 else 1 for s in seq_tuple])
+      assert (len(struct_vect) == len(seq_tuple) or len(struct_vect) == len(seq_tuple) + 1) and max(seq_tuple) < K
    else:
-      assert K > 2
-      return -1 * sum([struct_vect[i + (c-1) * len(seq_tuple)] if c > 0 else 0 for i, c in enumerate(seq_tuple)])
+      assert (len(struct_vect) == len(seq_tuple) * K or len(struct_vect) == len(seq_tuple) * K + 1)  and max(seq_tuple) < K
+   if K == 2 and len(struct_vect) == len(seq_tuple):
+      return -1 * np.dot(struct_vect, seq_tuple2)
+   elif K == 2 and len(struct_vect) == len(seq_tuple) + 1:
+      return -1 * np.dot(struct_vect[:-1], seq_tuple2) + struct_vect[-1]
+   elif K > 2 and len(struct_vect) == len(seq_tuple) * K:
+      return -1 * sum([struct_vect[i + c * len(seq_tuple)] for i, c in enumerate(seq_tuple)])
+   elif K > 2 and len(struct_vect) == len(seq_tuple) * K + 1:
+      return -1 * sum([struct_vect[i + c * len(seq_tuple)] for i, c in enumerate(seq_tuple)]) + struct_vect[-1]
+   else:
+      raise RuntimeError('need K >= 2')
 
+ 
 def int_to_vector_structure_random(L, distribution):
-   if distribution == 'normal':
+   if distribution == 'normal' or distribution == 'normalisednormal' or distribution == 'offsetnormal':
       v = np.random.standard_normal(size=L)
-   elif distribution == 'exponential':
-      v = np.random.exponential(size=L)
    elif distribution == 'lognormal':
       v = np.random.lognormal(size=L)
    elif distribution == 'uniform':
       v = np.random.uniform(size=L)
+   elif distribution == 'binary':
+      v = np.random.choice([0.25, 0.75], size=L, replace=True)
    else:
       raise RuntimeError('distribution not implemented')
    return [x for x in v]
@@ -53,26 +63,39 @@ def find_energygap(seq_tuple, structure_vs_structure_vect, K=2):
    min_G, second_G = sorted([G for G in structure_vs_G.values()])[:2]
    return abs(second_G - min_G)
 
-
-def get_phenotype_ensemble(seq_tuple, structure_vs_structure_vect, kbT=1, name_function='exponential', K=2):
+def get_phenotype_ensemble(seq_tuple, structure_vs_structure_vect, kbT=1, name_function='exponential', K=2, cutoff=0):
    structure_vs_G = {struct: get_energy(struct_vect, seq_tuple, K) for struct, struct_vect in structure_vs_structure_vect.items()}
-   if name_function  == 'exponential':
+   if name_function in ['ReLu', 'Softplus']:
+      structure_vs_Gscaled = {structure:  -1*G + kbT  for structure, G in structure_vs_G.items()} 
+   if name_function in ['exponential', 'inversesquared', 'expsquared']:
       Gmin = np.min([G for G in structure_vs_G.values()])
-      dict_unnormalised =  {structure: np.exp(-1 * (G-Gmin)/kbT) for structure, G in structure_vs_G.items()}
+   if name_function  == 'exponential':
+      dict_unnormalised =  {structure: np.exp(-1 * (G-Gmin)/kbT) for structure, G in structure_vs_G.items()} #Gmin to avoid overflow errors
    elif name_function == 'linear':
       Gmax = max(structure_vs_G.values())
       dict_unnormalised = {structure:   (Gmax - G + kbT)  for structure, G in structure_vs_G.items()} #needs to be positive
    elif name_function == 'inversesquared':
-      Gmin = min(structure_vs_G.values())
       dict_unnormalised = {structure: 1/(G - Gmin + kbT)**2  for structure, G in structure_vs_G.items()}
    elif name_function == 'expsquared':
-      Gmin = min(structure_vs_G.values())
       dict_unnormalised = {structure: np.exp(-1 * (G - Gmin)**2/kbT)  for structure, G in structure_vs_G.items()}   
-   Z = sum(list(dict_unnormalised.values()))
-   #if Z == 0:
-   #   return {struct:  0 for struct, P in dict_unnormalised.items()}
+   elif name_function == 'ReLu':
+      dict_unnormalised = {structure: geff if geff > 0 else 0 for structure, geff in structure_vs_Gscaled.items()}
+   elif name_function == 'Softplus':   
+      dict_unnormalised = {structure: np.log(1+np.exp(geff)) if geff < 10 else geff for structure, geff in structure_vs_Gscaled.items()}
+   Z = sum([i for i in dict_unnormalised.values()])
+   assert min([k for k in dict_unnormalised.keys()]) > 0 
+   assert min([k for k in dict_unnormalised.values()]) >= 0 
+   if Z < 10**(-9):
+      assert name_function == 'ReLu'
+      return {0: 1}
+   assert len([i for i in dict_unnormalised.values() if np.isnan(i)]) == 0
    assert Z > 0
-   return {structure: G/Z for structure, G in dict_unnormalised.items()}
+   Boltz_dist = {structure: G/Z for structure, G in dict_unnormalised.items() if G/Z > cutoff}
+   if abs(sum(Boltz_dist.values()) - 1) > 0.0001:
+      assert sum(Boltz_dist.values()) < 1
+      Boltz_dist[0] = 1 - sum(Boltz_dist.values())
+   abs(sum(Boltz_dist.values()) - 1) < 0.0001
+   return {B:P for B, P in Boltz_dist.items() if P > cutoff}
 
 def get_frequencies_in_array(GPmap, ignore_undefined=True, structure_invalid_test=isundefined_struct_int):
    """ sum over an entire GP array: and sum the number of times each structure is found;
@@ -132,7 +155,7 @@ def get_Grobustness_Gevolvability(GPmap, structure_invalid_test=isundefined_stru
          neighbourphenos = [GPmap[tuple(deepcopy(neighbourgeno))] for neighbourgeno in neighbours]
          assert len(neighbourphenos) == L * (K-1)
          Grobustness[genotype] = neighbourphenos.count(ph)/float(len(neighbourphenos))
-         Gevolvability[genotype] = len(set([n for n in set(neighbourphenos) if n != ph and not isundefined_struct_int(ph)]))
+         Gevolvability[genotype] = len(set([n for n in set(neighbourphenos) if n != ph and not isundefined_struct_int(n)]))
    return Grobustness, Gevolvability
 
 
@@ -151,6 +174,8 @@ def get_sequence_constraints(chosen_ph, GPmap):
    neutral_set = np.argwhere(GPmap == chosen_ph)
    geno_vs_NC_array = find_NC(deepcopy(tuple(neutral_set[np.random.randint(len(neutral_set))])), GPmap)
    g0_list = [tuple(g0) for g0, NC in np.ndenumerate(geno_vs_NC_array) if NC > 0.5]
+   if len(g0_list) == 0:
+      return [np.nan for i in range(L)], [np.nan for i in range(L)], len(g0_list), grho_list, {}
    test_NC(g0_list, GPmap)
    pos_vs_versatility_list = {i: [] for i in range(L)}
    grho_list = []
@@ -204,6 +229,7 @@ def find_NC(g0, GPmap):
       U_list.remove(tuple(g1))
    return NCindex_array
 
+
 def find_NCs(structure_int, GPmap):
    #using the algorithm from Gruener et al. (1996); adapted from biomorphs paper
    print('find NC of structure', structure_int, flush=True)
@@ -217,28 +243,30 @@ def find_NCs(structure_int, GPmap):
          continue
    while not all_NCs_found:
       U_list, U = [], np.zeros_like(GPmap, dtype='uint16')
-
       U[tuple(g0)] = 1
       U_list.append(tuple(g0))
       while len(U_list)>0: #while there are elements in the unvisited list
-         g1 = deepcopy(U_list[0] )
+         g1 = U_list.pop() #deepcopy(U_list[0] )
          assert GPmap[g1] == structure_int
          for g2 in neighbours_g(g1, K, L):
             ph2 = int(GPmap[tuple(g2)])
             if ph2 == structure_int and U[tuple(g2)] < 0.5 and abs(int(NCindex_array[tuple(g2)]) - NCindex) > 0.5:
                U[tuple(g2)] = 1
                U_list.append(tuple(g2[:]))
+               assert NCindex_array[tuple(g2)] < 0.5
          U[tuple(g1)] = 0
          NCindex_array[tuple(g1)] = NCindex #visited list
-         U_list.remove(tuple(g1))
+         #U_list.remove(tuple(g1))
       ### clean up
       NCindex += 1
-      all_NCs_found = True 
+      all_NCs_found_new = True 
       for g, ph in np.ndenumerate(GPmap):
          if ph == structure_int and NCindex_array[g] < 0.5:
-            all_NCs_found = False 
+            all_NCs_found_new = False 
             g0 = tuple(g[:]) 
             continue
+      all_NCs_found = all_NCs_found_new
+   assert np.array_equal(NCindex_array > 0.5, GPmap == structure_int)
    return NCindex_array
 
 
@@ -255,21 +283,8 @@ def shape_space_covering(repetitions, GPmap, structure_invalid_test):
 
 ###############################################################################################
 
-
-def get_entropy_array(get_Boltzmann_ensemble_givenarray_list, K, L):
-   entropy_array = np.zeros((K,)*L, dtype=float)
-   counter = 0
-   for g, p in np.ndenumerate(entropy_array):
-      p_list = get_Boltzmann_ensemble_givenarray_list(g)
-      assert abs(sum(p_list) - 1) < 0.001
-      entropy_array[g] = get_entropy(p_list)   
-      assert not np.isnan(entropy_array[g])
-      counter += 1
-      if counter % 10**6 == 0:
-         print('finished entropy array', round(counter/K**L*100, 2), '%')
-   return entropy_array
-
 def hamming_dist(g1, g2):
+   assert len(g1) == len(g2)
    return len([x for i, x in enumerate(g1) if x != g2[i]])
 
 
@@ -294,6 +309,8 @@ def get_prob_lowest_G(K, L, get_Boltzmann_ensemble, type_prob='mfe'):
          print('finished', 'get_prob_lowest_G', type_prob, count/K**L * 100, '%')
    return mfe_p_array
 
+
+
 #@jit(nopython=True)
 def get_entropy(p_list):
    return np.sum([-1 * p * np.log(p) for p in p_list if p > 0])
@@ -314,24 +331,19 @@ def get_Boltzmann_ensemble_list(g, P_array):
 def get_Boltzmann_ensemble_list_polyomino(g, g_vs_assembly_graph, assembly_graph_vs_ensemble_list):
    return assembly_graph_vs_ensemble_list[g_vs_assembly_graph[g]]
 
-def get_Boltzmann_freq(g, ph, P_array):
-   return P_array[tuple([x for x in g] + [ph,])]
 
 def ND_GPmapproperties_Jouffrey_def_single_iteration(list_all_phenotypes, K, L, get_Boltzmann_ensemble, threshold_set):
    ####### input can be all folded or all phenotypes
    counter = 0
    ## initial variables pheno freq
-   #max_pheno = max(list_all_phenotypes)
    Psetrobustness, Psetevolvability, Psetrobustevolvability, Pnorm  = {p: 0 for p in list_all_phenotypes}, {p: 0 for p in list_all_phenotypes}, {p: 0 for p in list_all_phenotypes}, {p: 0 for p in list_all_phenotypes}
    ##
    for g, dummy in np.ndenumerate(np.zeros((K,)*L, dtype=np.uint8)):
-      counter += 1
-      set_rob, set_evolv, set_robust_evolv = 0, 0, 0
-      set_g = set([x for x, P in get_Boltzmann_ensemble(g).items() if P >= threshold_set])
-      Gsetrobustness, Gsetrobustevolvability, Gsetevolvability = [0,]*3
+      set_g = set([x for x, P in get_Boltzmann_ensemble(g).items() if P >= threshold_set and x > 0.5])
+      Gsetrobustness, Gsetrobustevolvability, Gsetevolvability = 0, 0, 0
       for g2 in neighbours_g(g, K, L):
          Boltz2 = get_Boltzmann_ensemble(g2)
-         set_n = set([x for x, P in Boltz2.items() if P >= threshold_set])
+         set_n = set([x for x, P in Boltz2.items() if P >= threshold_set and x > 0.5])
          set_joint = set_n | set_g
          assert len(set_joint) >= max(len(set_g), len(set_n))
          if len(set_g.intersection(set_n)) > 0:
@@ -342,13 +354,13 @@ def ND_GPmapproperties_Jouffrey_def_single_iteration(list_all_phenotypes, K, L, 
             Gsetevolvability += 1.0/((K-1) * L)
          del Boltz2
       ####
-      for ph in set_n:
-         if ph in list_all_phenotypes:
-            Psetrobustness[ph] += Gsetrobustness
-            Psetrobustevolvability[ph] += Gsetrobustevolvability
-            Psetevolvability[ph] += Gsetevolvability
-            Pnorm[ph] += 1
+      for ph in set_g:
+         Psetrobustness[ph] += Gsetrobustness
+         Psetrobustevolvability[ph] += Gsetrobustevolvability
+         Psetevolvability[ph] += Gsetevolvability
+         Pnorm[ph] += 1
       ## finished 
+      counter += 1
       if counter % 10**5 == 0:
          print('finished', counter/K**L*100, '%', flush=True)
    # final processing - pheno rob
@@ -361,7 +373,6 @@ def ND_GPmapproperties_Jouffrey_def_single_iteration(list_all_phenotypes, K, L, 
 def ND_GPmapproperties(list_all_phenotypes, K, L, get_Boltzmann_ensemble_funct, structure_invalid_test):
    print('start ND_GPmapproperties')
    list_all_phenotypes_valid = [p for p in list_all_phenotypes if not structure_invalid_test(p)]
-   max_ph = max(list_all_phenotypes_valid)
    ph_vs_f = np.zeros(max(list_all_phenotypes) + 1, dtype='float')
    ph_vs_entropy_unnorm = np.zeros(max(list_all_phenotypes) + 1, dtype='float')
    ph_vs_rho_unnorm = np.zeros(max(list_all_phenotypes) + 1, dtype='float')
@@ -410,9 +421,6 @@ def process_genotype_g(Boltz, Boltz_neighbours, ph_vs_entropy_unnorm, ph_vs_f, p
                      grho += B * B2  
    grho = grho/(no_neighbours)
    gev = sum([B * sum([1 - gevolv_prod[(p, p2)] for p2 in list_all_phenotypes_valid if p2 != p]) for p, B in enumerate(Boltz) if p > 0.5])
-   if np.isnan(grho) or np.isnan(gev):
-      print(Boltz)
-      print(Boltz_neighbours)
    return grho, gev, ph_vs_entropy_unnorm, ph_vs_f, ph_vs_p2_vs_evolv_prod, ph_vs_rho_unnorm
 
 
@@ -473,33 +481,19 @@ if __name__ == "__main__":
    print('Grobustness of AC', Grobustness[0, 2], '\n---------------\n\n')
    print('Gevolvability of AC', Gevolvability[0, 2], '\n---------------\n\n')   
    ########
-   struct_vect = (0, 0.5, 0.3, 0.4,      0.1, 0.1, 0.2, 0.8)
-   G = get_energy(struct_vect, (0, 2, 1, 0), K=3)
-   assert abs(G + (0.1 + 0.3)) < 0.001
+   struct_vect = (0, 0.5, 0.3, 0.4,      0.1, 0.1, 0.2, 0.8,    1.1, 2, 0.3, -0.1)
    G = get_energy(struct_vect, (0, 2, 1, 2), K=3)
-   assert abs(G + (0.1 + 0.3 + 0.8)) < 0.001
-   G = get_energy(struct_vect, (2, 2, 2, 2), K=3)
-   assert abs(G + (1.2)) < 0.001
+   assert abs(G + (0 + 2 + 0.2 - 0.1)) < 0.001
+   G = get_energy(struct_vect, (0, 0, 1, 2), K=3)
+   assert abs(G + (0 + 0.5 + 0.2 - 0.1)) < 0.001
+   G = get_energy(struct_vect, (2, 2, 2, 1), K=3)
+   assert abs(G + (1.1+2+0.3+0.8)) < 0.001
    G = get_energy(struct_vect, (1, 1, 1, 1), K=3)
    assert abs(G + (1.2)) < 0.001
    G = get_energy(struct_vect, (1, 1, 2, 1), K=3)
-   assert abs(G + (1.1)) < 0.001
-   struct_vect = (0, 0.5, 0.3, 0.4,      0.1, 0.1, 0.2, 0.8,    1.1, 2, 0.3, -0.1)
-   G = get_energy(struct_vect, (0, 2, 1, 3), K=4)
-   assert abs(G + (0.1 + 0.3 - 0.1)) < 0.001
-   G = get_energy(struct_vect, (0, 3, 1, 2), K=4)
-   assert abs(G + (2 + 0.3 + 0.8)) < 0.001
-   G = get_energy(struct_vect, (2, 2, 2, 3), K=4)
-   assert abs(G + (0.3)) < 0.001
-   G = get_energy(struct_vect, (1, 1, 1, 1), K=4)
-   assert abs(G + (1.2)) < 0.001
-   G = get_energy(struct_vect, (1, 1, 2, 1), K=4)
-   assert abs(G + (1.1)) < 0.001
-   G = get_energy(struct_vect, (0, 2, 1, 2), K=4)
-   assert abs(G + (0.1 + 0.3 + 0.8)) < 0.001
-   G = get_energy(struct_vect, (2, 2, 2, 2), K=4)
-   assert abs(G + (1.2)) < 0.001
-   G = get_energy(struct_vect, (1, 1, 1, 1), K=4)
-   assert abs(G + (1.2)) < 0.001
-   G = get_energy(struct_vect, (1, 1, 2, 1), K=4)
-   assert abs(G + (1.1)) < 0.001
+   assert abs(G + (1.3)) < 0.001
+   G = get_energy(struct_vect, (0, 2, 1, 2), K=3)
+   assert abs(G + (0 + 2+0.2-0.1)) < 0.001
+   G = get_energy(struct_vect, (2, 2, 2, 2), K=3)
+   assert abs(G + (3.3)) < 0.001
+
