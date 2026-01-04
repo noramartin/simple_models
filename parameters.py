@@ -1,12 +1,6 @@
 
 
 ###############################################################################################
-#synthetic
-###############################################################################################
-synthetic_L, synthetic_K = 15, 2
-synthetic_filename = '_'+str(synthetic_L) + '_' + str(synthetic_K) 
-
-###############################################################################################
 #RNA
 ###############################################################################################
 RNA_L, RNA_K = 12, 4
@@ -24,10 +18,10 @@ else:
 ###############################################################################################
 #polyomino
 ###############################################################################################
-polyomino_ntiles, polyomino_K = 3, 3
+polyomino_ntiles, polyomino_K = 2, 8
 polyomino_seeded_assembly = False
 polyomino_traditionalGPmap = True ##take only deterministic assemblies for D GP map, not most frequent in ND assemblies
-polyomino_n_runs, polyomino_threshold = 500, 5 #5
+polyomino_n_runs, polyomino_threshold = 5000, 50#500, 5 #5000, 50 #
 polyomino_filename = 'polyomino' + str(polyomino_ntiles) + '_' + str(polyomino_K) +'_nruns'+str(polyomino_n_runs)+'_threshold'+str(polyomino_threshold) + '_'
 if polyomino_seeded_assembly:
 	polyomino_filename += 'seeded'

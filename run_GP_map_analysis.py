@@ -5,7 +5,6 @@ print(sys.version)
 import numpy as np
 from functions import synthetic_model_functions as synthetic
 from os.path import isfile
-from scipy import stats
 from functions import RNA_functions as RNA_functions
 from functions import HPfunctions_numba as HP_functions
 from functions import polyomino_functions as polyomino_functions
@@ -18,7 +17,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from functions.general_functions import *
 from collections import Counter
-
+import functions.NCevolv as NC
+from statistics import covariance
 
 
 print(sys.argv[1:])
@@ -54,7 +54,7 @@ elif type_map.startswith('HP') or type_map.startswith('ncHP'):
                                                                                                               compact=param.HP_iscompact)
    structure_int_to_cm = {i + 1: s for i, s in enumerate(contact_map_list)}
    structure_int_to_ud = {i + 1: s for i, s in enumerate(updown_list)}
-   assert  max(number_s_with_cm_list) == min(number_s_with_cm_list) #if there are degeneracies, temperature matters even for D GP maps
+   assert  max(number_s_with_cm_list) == min(number_s_with_cm_list) #if there were degeneracies, temperature matters even for D GP maps
    list_all_possible_structures = sorted(list(structure_int_to_cm.keys()))
    ###
    number_s_with_cm_list = np.array(number_s_with_cm_list)
@@ -71,24 +71,30 @@ elif type_map.startswith('polyomino'):
    genotype_to_assembly_graph_filename = filepath + 'data/genotype_to_assembly_graph_'+ params_assembly_graph +'.npy'
    if not isfile(genotype_to_assembly_graph_filename):
       genotype_to_assembly_graph, counter =  np.zeros((K,)*L, dtype='uint32'), 0
-      assembly_graph_list, assembly_graph_characteristics = [], {}
+      assembly_graph_list = []
       for g, zero in np.ndenumerate(genotype_to_assembly_graph):
          counter += 1
          if zero < 0.1: #not already provided info
-            g_min = polyomino_functions.construct_simplest_genotype(g, max_c=K-1)
+            g_list, g_min = polyomino_functions.construct_simplest_genotype(g, max_c=K-1, seeded=param.polyomino_seeded_assembly)
             if genotype_to_assembly_graph[g_min] > 0.1:
-               genotype_to_assembly_graph[g] = genotype_to_assembly_graph[g_min]
+               assembly_graph = genotype_to_assembly_graph[g_min]
+               genotype_to_assembly_graph[g] = assembly_graph
+               assert polyomino_functions.assembly_graphs_isomorhpic(polyomino_functions.adjacancy_matrix_assembly_graph(g, param.polyomino_seeded_assembly), assembly_graph_list[assembly_graph-1])
+            elif max([genotype_to_assembly_graph[g2] for g2 in g_list]) > 0:
+               assembly_graph = max([genotype_to_assembly_graph[g2] for g2 in g_list])
+               genotype_to_assembly_graph[g] = assembly_graph
+               assert polyomino_functions.assembly_graphs_isomorhpic(polyomino_functions.adjacancy_matrix_assembly_graph(g, param.polyomino_seeded_assembly), assembly_graph_list[assembly_graph-1])
             else:
-               assembly_graph_index, assembly_graph_list, assembly_graph_characteristics =  polyomino_functions.find_assembly_graph(g, assembly_graph_list, assembly_graph_characteristics, seeded_assembly=param.polyomino_seeded_assembly)
+               assembly_graph_index, assembly_graph_list =  polyomino_functions.find_assembly_graph(g, assembly_graph_list, seeded_assembly=param.polyomino_seeded_assembly)
                genotype_to_assembly_graph[g] = assembly_graph_index
                assert assembly_graph_index < 2**31
-               list_of_genotypes_with_identical_assembly_graph = [tuple(g2[:]) for g2 in polyomino_functions.cyclic_permutations(np.array(g))]
-               list_of_genotypes_with_identical_assembly_graph.append(tuple(g_min[:]))
-               for g2 in list_of_genotypes_with_identical_assembly_graph:
+               for g2 in g_list + [g_min,]:
                   assert len(g2) == L
                   assert genotype_to_assembly_graph[g2] < 0.1 or genotype_to_assembly_graph[g2] == assembly_graph_index
                   genotype_to_assembly_graph[g2] = assembly_graph_index
-         if counter % (5*10**5) == 0:
+                  assert polyomino_functions.assembly_graphs_isomorhpic(polyomino_functions.adjacancy_matrix_assembly_graph(g2, param.polyomino_seeded_assembly), assembly_graph_list[assembly_graph_index-1])
+
+         if counter % (10**4) == 0:
             print('finished', counter/K**L*100, '%', 'number assembly graphs', len(assembly_graph_list), flush=True)
       np.save(genotype_to_assembly_graph_filename, genotype_to_assembly_graph, allow_pickle=False)
    else:
@@ -120,13 +126,26 @@ elif type_map.startswith('polyomino'):
    list_all_possible_structures = [e for e in pheno_vs_num.values() if e > 0]
 ###############################################################################################
 elif type_map.startswith('synthetic'):
-   K, L = param.synthetic_K, param.synthetic_L
-   description_parameters = type_map + param.synthetic_filename
-   number_phenos = int(type_map.split('_')[-1])
-   distribution = type_map.split('_')[-2]
+   K, L = int(type_map.split('_')[-1]), int(type_map.split('_')[-2])
+   description_parameters = type_map  
+   number_phenos = int(type_map.split('_')[-3])
+   distribution = type_map.split('_')[-4]
    filename_vectors = filepath + 'data/parameter_vectors_'+description_parameters+'.csv'
    if not isfile(filename_vectors):
-      structure_vs_structure_vect = {s: synthetic.int_to_vector_structure_random(L * (K - 1), distribution=distribution) for s in range(1, number_phenos + 1)}
+      if K == 2:
+         vector_length = L
+      else:
+         vector_length = K * L
+      if distribution == 'offsetnormal':
+         vector_length += 1
+      structure_vs_structure_vect = {s: synthetic.int_to_vector_structure_random(vector_length, distribution=distribution) for s in range(1, number_phenos + 1)}
+      if distribution == 'normalisednormal':
+         structure_vs_norm = {s: np.sqrt(np.sum([x**2 for x in v0])) for s, v0 in structure_vs_structure_vect.items()}
+         man_norm = np.mean([n for n in structure_vs_norm.values()])
+         structure_vs_structure_vect0 = {s: [v for v in v0] for s, v0 in structure_vs_structure_vect.items()}
+         structure_vs_structure_vect = {s: [v*man_norm/structure_vs_norm[s] for v in v0] for s, v0 in structure_vs_structure_vect0.items()}
+         for s, v2 in structure_vs_structure_vect.items():
+            assert abs(np.sqrt(np.sum([x**2 for x in v2])) - man_norm) < 0.001
       list_all_possible_structures = [k for k in structure_vs_structure_vect.keys()]
       structure_vs_structure_vect_df = pd.DataFrame.from_dict({'ph': list_all_possible_structures,
                                                                'structure vector': ['_'.join([str(x) for x in structure_vs_structure_vect[p]]) for p in list_all_possible_structures]}).to_csv(filename_vectors)
@@ -136,7 +155,7 @@ elif type_map.startswith('synthetic'):
       list_all_possible_structures = [k for k in structure_vs_structure_vect.keys()]
    if 'nonlinear_function' in type_map:
       different_nonlinear_function = True 
-      name_different_function = type_map.split('_')[-3]
+      name_different_function = type_map.split('_')[-5]
    else:
       different_nonlinear_function = False
       name_different_function = 'exponential'
@@ -184,8 +203,11 @@ if not isfile(GPmap_filename):
    np.save(GPmap_filename, GPmap, allow_pickle=False)
 else:
    GPmap = np.load(GPmap_filename)
-if type_map.startswith('synthetic'):
-   print('number of genotypes with undefined pheno', len(np.where(GPmap == 0)))
+if type_map.startswith('synthetic') or type_map.startswith('HP'):
+   print('number of genotypes with undefined pheno', np.count_nonzero(GPmap < 0.2), 'fraction', np.count_nonzero(GPmap < 0.2)/K**L)
+if 'binary' in description_parameters:
+   energygap_zero_p = [synthetic.find_energygap(g, structure_vs_structure_vect, K=K) for g, P in np.ndenumerate(GPmap) if P < 0.2]
+   print('quartiles of energy gap in undefined genotype in G GP map', [np.percentile(energygap_zero_p, p) for p in (25, 50, 75)])
 phenos_Dmap = [p for p in np.unique(GPmap) if p > 0]
 print('number of unique phenos in D GP map', len(phenos_Dmap), np.unique(GPmap))
 ###############################################################################################
@@ -194,29 +216,28 @@ print('GP map analysis', flush=True)
 ###############################################################################################
 ###############################################################################################
 GPmapdata_filename, Grobustness_filename, Gevolvability_filename = filepath + 'data/GPmapproperties_'+description_parameters+'.csv', filepath + 'data/Grobustness_'+description_parameters+'.npy', filepath + 'data/Gevolvability_'+description_parameters+'.npy'
-if not isfile(GPmapdata_filename) or not isfile(Grobustness_filename) or not isfile(Gevolvability_filename):
+if not isfile(GPmapdata_filename) or not isfile(Grobustness_filename) or not isfile(Gevolvability_filename):# and 'different_nonlinear_function' not in description_parameters:
    ph_vs_f, ph_vs_Prho, ph_vs_Pevolv = synthetic.get_deterministic_Prho_Pevolv(GPmap, structure_invalid_test = synthetic.isundefined_struct_int)
    N_list = [ph_vs_f[s] if s in ph_vs_f else np.nan for s in list_all_possible_structures]
    rho_list = [ph_vs_Prho[s] if s in ph_vs_f else np.nan for s in list_all_possible_structures]
    Pevolv_list = [ph_vs_Pevolv[s] if s in ph_vs_f else np.nan for s in list_all_possible_structures]
    data_dmap = {'phenotype': list_all_possible_structures, 'neutral set size': N_list, 'rho': rho_list, 'p_evolv': Pevolv_list}
    if type_map.startswith('synthetic'):
-      data_dmap['sum over phenotypic vector'] = [sum(structure_vs_structure_vect[s]) for s in list_all_possible_structures]
       mean_no_phenos, std_no_phenos = synthetic.shape_space_covering(10**2, GPmap, structure_invalid_test= synthetic.isundefined_struct_int)
       df_shape_space = pd.DataFrame.from_dict({'mean # pheno': mean_no_phenos, 'std # phenos': std_no_phenos, 'dist': np.arange(1, len(mean_no_phenos) + 1)})
       df_shape_space.to_csv(filepath + 'data/shape_space_covering'+description_parameters+'.csv')
       ###
       ph_by_rank = sorted(ph_vs_f.keys(), key=ph_vs_f.get, reverse=True)
-      phenos_for_versatility_analysis = [ph_by_rank[i] for i in [3, len(ph_by_rank)//4, len(ph_by_rank)//2]]
-      data_versatility = {'pos': np.arange(1, L+1)}
-      for ph in phenos_for_versatility_analysis:
-         mean_v, std_v, NC_size, grho_list, no_neutral_vs_prevalence = synthetic.get_sequence_constraints(ph, GPmap)
-         data_versatility['mean v  - rank '+str(len([n for n in N_list if n > ph_vs_f[ph]])) + ' ' + str(NC_size)] = list(mean_v)
-         data_versatility['std v - rank '+str(len([n for n in N_list if n > ph_vs_f[ph]]))+ ' ' + str(NC_size)] = list(std_v) 
-         for i in range(K):
-            data_versatility[str(i) + 'neutral prevelance - rank '+str(len([n for n in N_list if n > ph_vs_f[ph]]))+ ' ' + str(NC_size)] = list(no_neutral_vs_prevalence[i]) 
-         print('number of neutral neighbours', Counter(grho_list))
-      pd.DataFrame.from_dict(data_versatility).to_csv(filepath + 'data/DGPmap_versatility'+description_parameters+'.csv')
+      if len(ph_by_rank) > 10:
+         phenos_for_versatility_analysis = [ph_by_rank[i] for i in [3, len(ph_by_rank)//4, len(ph_by_rank)//2]]
+         data_versatility = {'pos': np.arange(1, L+1)}
+         for ph in phenos_for_versatility_analysis:
+            mean_v, std_v, NC_size, grho_list, no_neutral_vs_prevalence = synthetic.get_sequence_constraints(ph, GPmap)
+            data_versatility['mean v  - rank '+str(len([n for n in N_list if n > ph_vs_f[ph]])) + ' ' + str(NC_size)] = list(mean_v)
+            data_versatility['std v - rank '+str(len([n for n in N_list if n > ph_vs_f[ph]]))+ ' ' + str(NC_size)] = list(std_v) 
+            for i in range(K):
+               data_versatility[str(i) + 'neutral prevalance - rank '+str(len([n for n in N_list if n > ph_vs_f[ph]]))+ ' ' + str(NC_size)] = list(no_neutral_vs_prevalence[i]) 
+         pd.DataFrame.from_dict(data_versatility).to_csv(filepath + 'data/DGPmap_versatility'+description_parameters+'.csv')
       no_NCs_list = [np.max(synthetic.find_NCs(structure_int, GPmap)) for structure_int in ph_by_rank]
       pd.DataFrame.from_dict({'ph': ph_by_rank, '# NCs': no_NCs_list}).to_csv(filepath + 'data/DGPmap_nNCs'+description_parameters+'.csv')
    df_GPmap = pd.DataFrame.from_dict(data_dmap)
@@ -226,6 +247,7 @@ if not isfile(GPmapdata_filename) or not isfile(Grobustness_filename) or not isf
    np.save(Gevolvability_filename, Gevolvability, allow_pickle=False)
 if 'traditional_DGPmap' in description_parameters:
    description_parameters = description_parameters.replace('traditional_DGPmap', '')
+
 ###############################################################################################
 ###############################################################################################
 print('get ND GP map', flush=True)
@@ -239,7 +261,8 @@ elif description_parameters.startswith('polyomino'):
 elif description_parameters.startswith('HP') or description_parameters.startswith('ncHP') :
    kbT_list = [0.001, 0.25, 0.5, 1]
 elif description_parameters.startswith('synthetic'):
-   kbT_list = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2.5, 5, 'mean_energygap']
+   kbT_list = [0.0001, 0.001, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2.5, 5, 10, 'mean_energygap']
+
 for kbT in kbT_list:
    print(kbT, 'kbt')
    if kbT == 'default':
@@ -249,6 +272,8 @@ for kbT in kbT_list:
    if kbT == 'mean_energygap':
       assert type_map.startswith('synthetic')
       kbT = np.mean([synthetic.find_energygap(g, structure_vs_structure_vect, K=K) for g, P in np.ndenumerate(GPmap)])
+      np.save(filepath + 'data/mean_energygap_'+description_parameters_kbT+'.npy', np.array([kbT]), allow_pickle=False)
+      print('mean_energygap', kbT, '\n\n\n')
    filename_Boltzmann_array = filepath + 'data/Parray'+description_parameters_kbT+'.npy'
    if isfile(filename_Boltzmann_array):
       P_array = np.load(filename_Boltzmann_array)
@@ -257,13 +282,11 @@ for kbT in kbT_list:
       for g, structure_int in np.ndenumerate(GPmap):
          if description_parameters.startswith('synthetic'):
             assert name_different_function == 'exponential' or different_nonlinear_function
-            Boltz_dist = synthetic.get_phenotype_ensemble(g, structure_vs_structure_vect, kbT = kbT, name_function=name_different_function, K=K)
+            Boltz_dist = synthetic.get_phenotype_ensemble(g, structure_vs_structure_vect, kbT = kbT, name_function=name_different_function, K=K, cutoff=0.0001)
          elif description_parameters_kbT.startswith('ncHP') or description_parameters_kbT.startswith('HP'):
             Boltz_dist = HP_functions.HPget_Boltzmann_freq(g, contact_maps_as_single_array=contact_maps_as_single_array, number_s_with_cm_list=number_s_with_cm_list, kbT=kbT, potential=param.HP_potential)
          elif description_parameters.startswith('RNA'):
-            Boltz_dist = RNA_functions.get_Boltzmann_ensemble (g, db_to_structure_int=db_to_structure_int, temp=kbT)
-         elif description_parameters.startswith('polyomino'):
-            Boltz_dist = {ph: f for ph, f in assembly_graph_no_vs_pheno_ensemble[genotype_to_assembly_graph[g]].items()}
+            Boltz_dist = RNA_functions.get_Boltzmann_ensemble(g, db_to_structure_int=db_to_structure_int, temp=kbT)
          assert abs(sum(Boltz_dist.values()) - 1) < 0.05
          for s in list_all_possible_structures + [0,]:
             try:
@@ -274,10 +297,6 @@ for kbT in kbT_list:
          counter += 1
          if counter % (5*10**4) == 0:
             print('finished', counter/K**L*100, '%', flush=True)
-      if description_parameters.startswith('synthetic'): ### all-zero genotype will give artefacts - set to undefined
-         P_array[tuple([0 for x in g] + [0])] = 1 
-         for s in list_all_possible_structures:
-            P_array[tuple([0 for x in g] + [s])] = 0
       np.save(filename_Boltzmann_array, P_array, allow_pickle=False)
    if type_map.startswith('polyomino'):
       assembly_graph_no_vs_pheno_ensemble_list = {a: [ensemble[i] if i in ensemble else 0 for i in range(1+max(list_all_possible_structures))] for a, ensemble in assembly_graph_no_vs_pheno_ensemble.items()}
@@ -287,7 +306,6 @@ for kbT in kbT_list:
    else:
       get_Boltzmann_ensemble_givenarray_list = partial(synthetic.get_Boltzmann_ensemble_list, P_array = P_array)
       get_Boltzmann_ensemble_givenarray = partial(synthetic.get_Boltzmann_ensemble, P_array = P_array)
-
    ###############################################################################################
    print('analyse ND GP map', flush=True)
    ###############################################################################################
@@ -299,88 +317,70 @@ for kbT in kbT_list:
       ND_rho_list = [NDph_vs_rho[s] for s in list_all_possible_structures]
       NDPentropy_list = [NDPentropy[s] for s in list_all_possible_structures]
 
-      df_NDGPmap = pd.DataFrame.from_dict({'phenotype': list_all_possible_structures, 'neutral set size': ND_N_list, 'rho': ND_rho_list, 'p_evolv': NDPevolv_list, 'pheno entropy': NDPentropy_list})
+      df_NDGPmap = pd.DataFrame.from_dict({'phenotype': list_all_possible_structures, 'neutral set size': ND_N_list, 'rho': ND_rho_list, 'p_evolv': NDPevolv_list, 'pheno entropy': NDPentropy_list})      
       if type_map.startswith('synthetic'):
-         df_NDGPmap['sum over phenotypic vector'] = [sum(structure_vs_structure_vect[s]) for s in list_all_possible_structures] 
+         if 'offsetnormal' not in type_map:
+            df_NDGPmap['length phenotypic vector'] = [np.sqrt(sum([x**2 for x in structure_vs_structure_vect[s]])) for s in list_all_possible_structures] 
+         else:
+            df_NDGPmap['length phenotypic vector'] = [np.sqrt(sum([x**2 for x in structure_vs_structure_vect[s][:-1]])) for s in list_all_possible_structures] 
       df_NDGPmap.to_csv(NDGPmapdata_filename)
       np.save(NDGrobustness_filename, NDGrobustness, allow_pickle=False)
       np.save(NDGevolvability_filename, NDGevolvability, allow_pickle=False)
    else:
       df_NDGPmap = pd.read_csv(NDGPmapdata_filename)
       NDph_vs_f = {p:f for p, f in zip(df_NDGPmap['phenotype'].tolist(), df_NDGPmap['neutral set size'].tolist())}
-      NDph_vs_rho = {p:f for p, f in zip(df_NDGPmap['phenotype'].tolist(), df_NDGPmap['rho'].tolist())}
-      NDPevolv_dict = {p:f for p, f in zip(df_NDGPmap['phenotype'].tolist(), df_NDGPmap['p_evolv'].tolist())}
-
-
    ###############################################################################################
-   print('extract highest two probabilities for each geno', flush=True)
+   print('analyse ND GP map - largest NC per pheno', flush=True)
+   ###############################################################################################
+   thresholdNC = 0.2
+   NDGPmapdata_filename_NCs = filepath + 'data/NDGPmappropertiesNCs_'+description_parameters_kbT+'_'+str(thresholdNC)+'.csv'
+   if not isfile(NDGPmapdata_filename_NCs) and not (description_parameters_kbT.startswith('polyomino') and 100*param.polyomino_threshold != param.polyomino_n_runs):
+      if description_parameters.startswith('polyomino'):
+         NDph_vs_f, NDph_vs_rho, NDPevolv_dict, = NC.get_ND_GPmap_with_largest_NC_per_pheno_polyomino(assembly_graph_no_vs_pheno_ensemble, genotype_to_assembly_graph, list_all_possible_structures, get_Boltzmann_ensemble_givenarray_list, structure_invalid_test=synthetic.isundefined_struct_int, threshold=thresholdNC)
+      else:
+         NDph_vs_f, NDph_vs_rho, NDPevolv_dict, = NC.get_ND_GPmap_with_largest_NC_per_pheno(P_array, list_all_possible_structures, get_Boltzmann_ensemble_givenarray_list, structure_invalid_test=synthetic.isundefined_struct_int, threshold=thresholdNC)
+
+      NDPevolv_list = [NDPevolv_dict[s] for s in list_all_possible_structures]
+      ND_N_list = [NDph_vs_f[s] for s in list_all_possible_structures]
+      ND_rho_list = [NDph_vs_rho[s] for s in list_all_possible_structures]
+      df_NDGPmap = pd.DataFrame.from_dict({'phenotype': list_all_possible_structures, 'neutral set size': ND_N_list, 'rho': ND_rho_list, 'p_evolv': NDPevolv_list})      
+      df_NDGPmap.to_csv(NDGPmapdata_filename_NCs)
+   ###############################################################################################
+   print('number of low-G genos per pheno', flush=True)
+   ###############################################################################################
+   NDGPmapdata_filename_lowG = filepath + 'data/NDGPmapproperties_lowG_'+description_parameters+'.csv'
+   if description_parameters_kbT.startswith('synthetic') and not isfile(NDGPmapdata_filename_lowG):
+      ph_vs_Glist = {p: [synthetic.get_energy(structure_vs_structure_vect[p], g, K) for g, zero in np.ndenumerate(np.zeros((K,)*L, dtype='uint32'))] for p in list_all_possible_structures if p > 0}
+      df_data = {'phenotype': list_all_possible_structures}
+      for cutoff in np.arange(-5, 0):
+         df_data['# sequences below '+str(cutoff)] = [len([x for x in ph_vs_Glist[ph] if x < cutoff]) for ph in list_all_possible_structures]
+      if 'offsetnormal' not in type_map:
+         df_data['length phenotypic vector'] = [np.sqrt(sum([x**2 for x in structure_vs_structure_vect[s]])) for s in list_all_possible_structures] 
+      else:
+         df_data['length phenotypic vector'] = [np.sqrt(sum([x**2 for x in structure_vs_structure_vect[s][:-1]])) for s in list_all_possible_structures] 
+
+      df_NDGPmap = pd.DataFrame.from_dict(df_data)  
+      df_NDGPmap.to_csv(NDGPmapdata_filename_lowG)
+   ###############################################################################################
+   print('extract highest probability for each geno', flush=True)
    ###############################################################################################
    if type_map.startswith('synthetic') and not isfile(filepath + 'data/mfe_P_array_'+description_parameters_kbT+'.npy'):
       mfe_P_array = synthetic.get_prob_lowest_G(K, L, get_Boltzmann_ensemble_givenarray)
       np.save(filepath + 'data/mfe_P_array_'+description_parameters_kbT+'.npy', mfe_P_array, allow_pickle=False)
-   if type_map.startswith('synthetic') and not isfile(filepath + 'data/first_suboptimal_P_array_'+description_parameters_kbT+'.npy'):
-      first_suboptimal_P_array = synthetic.get_prob_lowest_G(K, L, get_Boltzmann_ensemble_givenarray, type_prob= 'first_suboptimal')
-      np.save(filepath + 'data/first_suboptimal_P_array_'+description_parameters_kbT+'.npy', first_suboptimal_P_array, allow_pickle=False)
-
    ###############################################################################################
    print('Jouffrey et al. analysis', flush=True)
    ###############################################################################################
-   if description_parameters.startswith('polyomino') or 'synthetic_normal_100_15_2' in type_map: #only do this for special cases
+   if (description_parameters.startswith('polyomino') and 100*param.polyomino_threshold == param.polyomino_n_runs) or ('synthetic_normal_100' in type_map and K == 2 and L == 15): #only do this for special cases
       for threshold_phenotype_set in [0.05, 0.1, 0.25]:
          jouffreyGPmapdata_filename =  filepath + 'data/jouffreyGPmapdata_filename'+description_parameters_kbT + 'threshold_phenotype_set' + str(threshold_phenotype_set)+'.csv'
          if not isfile(jouffreyGPmapdata_filename):
             Psetrobustness, Psetevolvability, Psetrobustevolvability = synthetic.ND_GPmapproperties_Jouffrey_def_single_iteration(list_all_possible_structures, K, L, get_Boltzmann_ensemble_givenarray, threshold_phenotype_set)
             df_jouffrey = pd.DataFrame.from_dict({'phenotype': list_all_possible_structures, 'setrob': Psetrobustness, 'setevolv': Psetevolvability, 'setrobustevolv': Psetrobustevolvability})
             df_jouffrey.to_csv(jouffreyGPmapdata_filename)
+   else:
+      print('Jouffrey et al. analysis not performed')
 
-   ###############################################################################################
-   print('find distance between peaks in ND GP map', flush=True)
-   ###############################################################################################
-   phenos_not_in_GPmap = 0
-   if not isfile(filepath + 'data/list_peaks'+description_parameters_kbT+'.csv') or not isfile('data/list_distances_peaks'+description_parameters_kbT+'.npy'):
-      phenotype_vs_gmax = {}
-      ##
-      if not type_map.startswith('RNA'):
-         len_list = []
-         for p in list_all_possible_structures:
-            print(p)
-            if type_map.startswith('synthetic') or type_map.startswith('RNA') or type_map.startswith('HP'):
-               pmax = np.amax(P_array[..., p])#get_max_P(P_array, p)
-               if pmax > 10**-6:
-                  #gmax = np.unravel_index(P_array[..., p].argmax(), GPmap.shape)
-                  ###
-                  gmax_list = np.argwhere(np.abs(P_array[..., p] - pmax ) < 10**-7)
-                  len_list.append(len(gmax_list))
-                  index = np.random.randint(0, high=len(gmax_list)) 
-                  gmax = [gmax_list[index][i] for i in range(L)]
-                  assert abs(P_array[tuple([x for x in gmax] + [p,])]- np.amax(P_array[..., p])) < 10**-7
-               else:
-                  gmax = [-1,] * L
-                  print(p, 'not in ND GPmap', description_parameters_kbT)
-                  phenos_not_in_GPmap += 1 
-            elif type_map.startswith('polyomino'):
-               assembly_graph_vs_prob_p =  {a: ensemble[p] for a, ensemble in assembly_graph_no_vs_pheno_ensemble.items() if p in ensemble}
-               assembly_graph = max(assembly_graph_vs_prob_p.keys(), key=assembly_graph_vs_prob_p.get)
-               geno_assembly_graph = np.where(genotype_to_assembly_graph == assembly_graph)
-               randomindex = np.random.randint(0, high=len(geno_assembly_graph[1])) 
-               gmax = [geno_assembly_graph[i][randomindex] for i in range(L)]
-               assert genotype_to_assembly_graph[tuple(gmax)] == assembly_graph    
-            else:
-               raise RuntimeError('not implemented', type_map)
-            phenotype_vs_gmax[p] = tuple(gmax)
-            print('mean number of peaks', np.mean(len(len_list)))
-      if type_map.startswith('RNA'):
-         phenotype_vs_gmax_array = find_peaks_RNA(P_array)
-         phenotype_vs_gmax = {p: tuple(phenotype_vs_gmax_array[p, ...]) for p in list_all_possible_structures if max(phenotype_vs_gmax_array[p, ...]) >= 0}
-      
-      list_distances_peaks = [synthetic.hamming_dist(phenotype_vs_gmax[p], phenotype_vs_gmax[q]) for i, p in enumerate(list_all_possible_structures) for q in list_all_possible_structures[:i] if max(phenotype_vs_gmax[p]) >= 0 and max(phenotype_vs_gmax[q]) >= 0]
-      np.save(filepath + 'data/list_distances_peaks'+description_parameters_kbT+'.npy', list_distances_peaks, allow_pickle=False)
-      dict_peaks = {'phenotype': [p for p in list_all_possible_structures], 'peak': ['_'.join([str(i) for i in phenotype_vs_gmax[p]]) for p in list_all_possible_structures]}
-      if type_map.startswith('synthetic'):
-         dict_peaks['vector'] = ['_'.join([str(i) for i in structure_vs_structure_vect[p]])  for p in list_all_possible_structures]
-      pd.DataFrame.from_dict(dict_peaks).to_csv(filepath + 'data/list_peaks'+description_parameters_kbT+'.csv')
-      assert phenos_not_in_GPmap <= len(NDph_vs_f) - len([f for f in NDph_vs_f.values() if not np.isnan(f) and f/K**L > 10**(-6)])
-
+ 
    ###############################################################################################
    print('get Pearson correlation between neighbouring/random ensembles', flush=True)
    ###############################################################################################
@@ -409,17 +409,15 @@ for kbT in kbT_list:
                structure_vs_p_list_random[ph].append(0)
          
       df_stats = pd.DataFrame.from_dict({'phenotype': list_all_possible_structures, 
-                                        'Pearson correlation random': [stats.pearsonr(structure_vs_p_list[s], structure_vs_p_list_random[s])[0] for s in list_all_possible_structures],
-                                        'Pearson correlation neighbours': [stats.pearsonr(structure_vs_p_list[s], structure_vs_p_list_neighbour[s])[0] for s in list_all_possible_structures]})
+                                        'covariance random': [covariance(structure_vs_p_list[s], structure_vs_p_list_random[s]) for s in list_all_possible_structures],
+                                        'covariance neighbours': [covariance(structure_vs_p_list[s], structure_vs_p_list_neighbour[s]) for s in list_all_possible_structures]})
       df_stats.to_csv(filepath + 'data/NDGPmap_genetic_corr_stats'+description_parameters_kbT+'_perpheno.csv')
- 
+
    ###############################################################################################
    print('example plots', flush=True)
    ###############################################################################################
    if not description_parameters.startswith('synthetic'):
       np.random.seed(1)
-      #genotype_list_plot = [tuple(np.random.choice(K, size=L, replace=True)) for i in range(15)]
-      #for genotype in genotype_list_plot:
       if description_parameters.startswith('RNA'):
          genotype = RNA_functions.sequence_str_to_int('CCUAGCUUGGGU')
          ensemble = RNA_functions.get_Boltzmann_ensemble(genotype, db_to_structure_int=db_to_structure_int, temp=kbT)
@@ -440,9 +438,7 @@ for kbT in kbT_list:
       elif description_parameters.startswith('polyomino'):
          if L < 12 or param.polyomino_threshold != 5:
             continue
-         #assembly_graph_chosen = np.random.choice([a for a, ensemble in assembly_graph_no_vs_pheno_ensemble.items() if 0 != max(list(ensemble.keys()), key=ensemble.get) and 0.4  < max(list(ensemble.values())) < 0.95])
-         #genotype = polyomino_functions.find_genotype_from_int(assembly_graph_chosen, genotype_to_assembly_graph)
-         genotype = (0, 0, 1, 1, 0, 0, 2, 1, 0, 0, 2, 1)
+         genotype = (0, 0, 1, 1, 0, 0, 2, 1) #(0, 0, 1, 1, 0, 0, 2, 1, 0, 0, 2, 1)
          ensemble = polyomino_functions.find_full_ensemble_polyomino(genotype, n_runs=10**4, seeded=param.polyomino_seeded_assembly, threshold=param.polyomino_threshold)
          ph_to_plot = [ph for ph in sorted(list(ensemble.keys()), key=ensemble.get, reverse=True) if ensemble[ph] > 0.01 and str(ph) != '0']
          if len(ph_to_plot) > 1:
@@ -452,30 +448,6 @@ for kbT in kbT_list:
                polyomino_functions.plot_outline(tile_pheno, ax[i])
                ax[i].set_title(str(round(ensemble[ph], 3)))
             f.savefig(filepath + 'plots_examples/NDexample_'+description_parameters_kbT+''.join([str(x) for x in genotype])+'.pdf')
-   ###############################################################################################
-   print('plot all polyomino phenotypes', flush=True)
-   ###############################################################################################
-   if type_map.startswith('polyomino'):
-      list_ND_phenos = sorted([ph for ph in list_all_possible_structures if ph not in phenos_Dmap], key=NDph_vs_f.get, reverse=True)
-      phenos_Dmap = sorted(phenos_Dmap, key=NDph_vs_f.get, reverse=True)
-      for i, list_to_plot in enumerate([list_ND_phenos, phenos_Dmap]):
-         f, ax = plt.subplots(ncols=10, nrows = len(list_to_plot)//10 + 1, figsize=(20, len(list_to_plot)/5+2.2))
-         for j, ph in enumerate(list_to_plot):
-            ph_str = [pdetailed for pdetailed, p in pheno_vs_num.items() if ph == p][0]
-            tile_pheno = polyomino_functions.from_str_to_tuple_list(ph_str)
-            if len(list_to_plot)//10 > 0:
-               indices = (j//10, j%10)
-            else:
-               indices = j
-            polyomino_functions.plot_outline(tile_pheno, ax[indices])
-            ax[indices].set_title(str(int(ph))+' '+'rho='+str(round(NDph_vs_rho[ph], 1))+', ev='+str(round(NDPevolv_dict[ph])), fontsize=7)
-         for j in range(len(list_to_plot), 10*(len(list_to_plot)//10 + 1)):
-            if len(list_to_plot)//10 > 0:
-               indices = (j//10, j%10)
-            else:
-               indices = j
-            ax[indices].axis('off')
-         f.savefig(filepath + 'plots_examples/'+['NDphenos', 'Dphenos'][i]+description_parameters+'.png', dpi=200)   
 
 
 
